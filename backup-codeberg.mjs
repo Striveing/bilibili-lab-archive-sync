@@ -120,21 +120,31 @@ async function main() {
 async function upstreamRefs() {
   const all = [];
   let url = `${GH_API}/git/refs?per_page=100`;
+  let sentToken = GH_TOKEN;
   while (url) {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'codeberg-mirror-control',
-        Accept: 'application/vnd.github+json',
-        ...(GH_TOKEN && { Authorization: `Bearer ${GH_TOKEN}` }),
-      },
-    });
+    const res = await fetch(url, { headers: ghHeaders(sentToken) });
     if (res.status === 404 || res.status === 451) return null;
+    // Actions 自带的 GITHUB_TOKEN 只对本仓库有效,读别人的仓库可能被拒;那就退回匿名,
+    // 别让整个同步因为一次 403 停摆。
+    if ((res.status === 401 || res.status === 403) && sentToken) {
+      console.log(`GitHub 拒绝了 token(${res.status}),改用匿名请求。`);
+      sentToken = '';
+      continue;
+    }
     all.push(...(await handle('GitHub', res)));
     // 该接口默认只给 30 条(本仓库实测 39 条),不翻页会静默漏掉备份内容。
     url = /<([^>]+)>;\s*rel="next"/.exec(res.headers.get('link') ?? '')?.[1];
   }
   // refs/pull/* 由 Codeberg 以 PR 记录承载,不参与分支/标签的逐字比对。
   return all.filter((r) => !r.ref.startsWith('refs/pull/')).map(toRef);
+}
+
+function ghHeaders(token) {
+  return {
+    'User-Agent': 'codeberg-mirror-control',
+    Accept: 'application/vnd.github+json',
+    ...(token && { Authorization: `Bearer ${token}` }),
+  };
 }
 
 // GitHub 与 Forgejo 的 ref 字段名在各版本间有出入,统一成 { name, sha }。
