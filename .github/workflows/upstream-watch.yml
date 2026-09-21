@@ -1,0 +1,53 @@
+name: upstream-watch
+# 每 5 分钟比对一次上游与 Codeberg 的 refs;一致就什么都不做。
+# 有差异才 clone + push,所以这个频率对 GitHub 和 Codeberg 都不算压力。
+# 退出码约定来自 backup-codeberg.mjs: 0 一致 / 2 需同步 / 3 上游已消失(标红即为告警)。
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      CODEBERG_USER: ${{ vars.CODEBERG_USER || 'IST' }}
+      CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+      CODEBERG_OWNER: ${{ vars.CODEBERG_OWNER || 'IST' }}
+      UPSTREAM: https://github.com/jichuo1/Bilibili_Innocent_Lab
+      DST: ${{ vars.CODEBERG_OWNER || 'IST' }}/${{ vars.DST_NAME || 'Bilibili_Innocent_Lab' }}
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 比对上游与 Codeberg
+        id: diff
+        run: |
+          set +e
+          node backup-codeberg.mjs verify 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          # 管道里的 $? 是 tee 的退出码,必须取 PIPESTATUS[0],否则差异永远检测不到
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: 有变化则推送
+        if: steps.diff.outputs.code == '2'
+        run: |
+          set -euo pipefail
+          git clone --quiet --mirror "$UPSTREAM" src.git
+          cd src.git
+          # 未合并 PR 的提交只存在于 refs/pull/*/head,而 Forgejo 不迁这类 ref,
+          # 所以显式转成普通分支一起归档,否则这部分工作就随上游一起消失。
+          git for-each-ref --format='%(refname) %(objectname)' refs/pull | while read -r ref sha; do
+            case "$ref" in */head) git update-ref "refs/heads/archive/pr-${ref//[!0-9]/}" "$sha" ;; esac
+          done
+          # 用 --all --tags 而不是 --mirror: 后者会把 Codeberg 上独有的 archive-info 分支删掉
+          git push --quiet --force --all "https://$CODEBERG_USER:$CODEBERG_TOKEN@codeberg.org/$DST.git"
+          git push --quiet --force --tags "https://$CODEBERG_USER:$CODEBERG_TOKEN@codeberg.org/$DST.git"
+          echo "已推送 $(git for-each-ref refs/heads refs/tags | wc -l) 个 ref 到 $DST" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 推送后复核
+        if: steps.diff.outputs.code == '2'
+        run: node backup-codeberg.mjs verify | tee -a "$GITHUB_STEP_SUMMARY"
