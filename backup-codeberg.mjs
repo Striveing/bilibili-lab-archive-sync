@@ -4,6 +4,7 @@
 //   watch    比对上游与 Codeberg 的 refs;有变化用退出码 2 通知 cron 去 push
 //   verify   逐 ref 打印比对表,用来证明备份没漏
 //   status   查看 Codeberg 侧仓库状态
+//   dispatch 立刻让 GitHub Actions 跑一轮检测+同步(不等 cron)
 // 退出码: 0 一致 / 1 出错 / 2 有变化需推送 / 3 上游已消失(此时 Codeberg 副本就是唯一副本)
 // 凭证: 环境变量优先,其次读 .secrets/<名字小写>.txt。不进对话、不进 shell 历史。
 //
@@ -94,7 +95,18 @@ async function main() {
         2
       )
     );
-  } else if (cmd === 'watch' || cmd === 'verify') {
+  } else if (cmd === 'dispatch') {
+      // 立刻跑一轮"检测+同步":直接调用 GitHub Actions 的 dispatch 接口,
+      // 不等 cron(定时任务由 GitHub 调度,官方并不保证准时)。需要 GITHUB_TOKEN。
+      if (!GH_TOKEN) bail('dispatch 需要 GITHUB_TOKEN(有 Actions 写权限的 GitHub token)');
+      const res = await fetch(`https://api.github.com/repos/${process.env.SYNC_REPO ?? 'Striveing/bilibili-lab-archive-sync'}/actions/workflows/upstream-watch.yml/dispatches`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${GH_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'codeberg-mirror-control' },
+        body: JSON.stringify({ ref: 'main' }),
+      });
+      if (!res.ok) bail(`GitHub 返回 ${res.status}: ${redact((await res.text()).slice(0, 200))}`);
+      console.log('已触发一次同步任务(去 Actions 页看运行结果)');
+    } else if (cmd === 'watch' || cmd === 'verify') {
     const down = await cb(`/repos/${DST}/git/refs`);
     const mine = new Map((down.refs ?? down).map(toRef).map((r) => [r.name, r.sha]));
     const up = await upstreamRefs();
@@ -113,7 +125,7 @@ async function main() {
       console.log(`✅ 上游 ${up.length} 个 ref 全部一致,无需同步。`);
     }
   } else {
-    bail(`未知子命令 ${cmd}:create | watch | verify | status`);
+    bail(`未知子命令 ${cmd}:create | watch | verify | status | dispatch`);
   }
 }
 
