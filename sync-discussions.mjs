@@ -36,6 +36,36 @@ for (const it of items) {
 }
 console.log(`上游 ${items.length} 条讨论,副本原有 ${have.size} 条,本次新增 ${made} 条`);
 
+// 第二阶段:补评论。上游 issue/PR 正文下的讨论往往比正文更有信息量。
+// 副本里没有上游编号,靠正文脚注 `[#N](url)` 反查对应的 Codeberg issue。
+const local = await cbPages(`${CB}/issues?state=all&per_page=50`);
+const byUpstream = new Map();
+for (const l of local) {
+  const n = /原 (?:PR|issue) \[#(\d+)\]/.exec(l.body ?? '');
+  if (n) byUpstream.set(Number(n[1]), l);
+}
+let posted = 0, already = 0, orphan = 0, pending = 0, limited = false;
+// Codeberg 对普通用户限流"6 条评论 / 5 分钟"(实测 429),所以每轮主动只写 5 条,
+// 剩下的靠幂等标记留到下一轮 —— 不能把限流当成同步失败报红。
+const CAP = 5;
+for (const it of items) {
+  const target = byUpstream.get(it.number);
+  if (!target) { if ((it.comments ?? 0) > 0) orphan++; continue; }
+  const existing = await cbPages(`${CB}/issues/${target.number}/comments?per_page=50`);
+  const seen = new Set(existing.map((c) => /<!--upstream-comment:(\d+)-->/ .exec(c.body ?? '')?.[1]).filter(Boolean));
+  const src = await ghPages(`${GH}/issues/${it.number}/comments?per_page=100`);
+  for (const c of src) {
+    if (seen.has(String(c.id))) { already++; continue; }
+    if (posted >= CAP || limited) { pending++; continue; }
+    const body = `<!--upstream-comment:${c.id}--> > 上游 [@${c.user.login}](${c.user.html_url}) · ${c.created_at} · 原评论 [#${c.number ?? ''}](${c.html_url})\n\n${c.body ?? ''}`;
+    const r = await fetch(`${CB}/issues/${target.number}/comments`, { method: 'POST', headers: CB_(), body: JSON.stringify({ body }) });
+    if (r.status === 429) { limited = true; pending++; console.log('  触到 Codeberg 限流(6 条/5 分钟),本轮停笔,余下的下一轮续传'); continue; }
+    if (!r.ok) { console.error(`写评论 ${c.id} 失败 ${r.status}: ${(await r.text()).slice(0, 140)}`); process.exitCode = 1; continue; }
+    posted++;
+  }
+}
+console.log(`[评论] 本次新写 ${posted} 条,已存在跳过 ${already} 条${limited ? '(因限流提前收笔)' : ''}${pending ? `,仍有 ${pending} 条待下轮` : ''}${orphan ? `,${orphan} 条上游讨论在副本里没有宿主(重跑一次)` : ''}`);
+
 async function labelId(name, color) {
   const list = await cb(`${CB}/labels`);
   const hit = list.find((l) => l.name === name);
