@@ -51,6 +51,18 @@ jobs:
           git push --quiet --force --tags "https://$CODEBERG_USER:$CODEBERG_TOKEN@codeberg.org/$DST.git"
           echo "已推送 $(git for-each-ref refs/heads refs/tags | wc -l) 个 ref 到 $DST" | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # 下面两步每轮都跑,不依赖上面的 ref 差异:release 可能被编辑(换附件、改正文)
+      # 而不产生新 tag,只盯 refs 就会静默漏掉。两个脚本都幂等,无新增时只花几次 API 调用。
+      - name: 同步 releases 与附件
+        run: |
+          set -o pipefail
+          node sync-releases.mjs 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: 同步 issue 与 PR 正文
+        run: |
+          set -o pipefail
+          node sync-discussions.mjs 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: 推送后复核
         if: steps.diff.outputs.code == '2'
         run: node backup-codeberg.mjs verify | tee -a "$GITHUB_STEP_SUMMARY"
