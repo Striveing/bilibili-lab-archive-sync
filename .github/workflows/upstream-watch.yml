@@ -15,6 +15,9 @@ jobs:
       CODEBERG_USER: ${{ vars.CODEBERG_USER || 'IST' }}
       CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
       CODEBERG_OWNER: ${{ vars.CODEBERG_OWNER || 'IST' }}
+      # runner 出口 IP 是共享的,匿名读 api.github.com 只有 60 次/小时、很容易被别人耗尽;
+      # 带上 Actions 自带的 token,被拒时脚本会自动退回匿名。
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       UPSTREAM: https://github.com/jichuo1/Bilibili_Innocent_Lab
       DST: ${{ vars.CODEBERG_OWNER || 'IST' }}/${{ vars.DST_NAME || 'Bilibili_Innocent_Lab' }}
       GIT_TERMINAL_PROMPT: "0"
